@@ -1,0 +1,20 @@
+services:
+  c-personal-db:
+    image: postgres:16
+    container_name: sc-personal-db
+    environment:
+      POSTGRES_USER: c_personal
+      POSTGRES_PASSWORD: c_personal_dev
+      POSTGRES_DB: c_personal
+    ports:
+      - "15441:5432"
+    volumes:
+      - c_personal_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U c_personal -d c_personal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  c_personal_pgdata:
+
