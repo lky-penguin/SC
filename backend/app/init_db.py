@@ -1,4 +1,4 @@
-"""初始化软件 C 数据库、算法注册表和脱敏样例数据集。"""
+"""初始化软件 C 数据库和算法注册表。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -6,15 +6,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text, update
 
 from app.db import Base, SessionLocal, engine
-from app.models import Algorithm, Dataset, DatasetRevision, ModelVersion
-from app.paths import PROJECT_ROOT
+from app.models import Algorithm, ModelVersion
 from app.services.constants import (
     ALGORITHM_CODES,
     ALGORITHM_STATUS_AVAILABLE,
-    DATASET_STATUS_ACTIVE,
     MODEL_STATUS_COMPLETED,
 )
-from app.utils.dataset_file_reader import build_fields_schema, read_dataset_file
 
 
 def _param_schema(code: str) -> list[dict]:
@@ -114,34 +111,6 @@ def seed_algorithms(db) -> None:
     db.commit()
 
 
-def seed_sample_dataset(db) -> None:
-    logical_id = "sample_network_security"
-    if db.scalar(select(Dataset).where(Dataset.logical_id == logical_id).limit(1)):
-        return
-    path = PROJECT_ROOT / "data" / "sample" / "sample_dataset.arff"
-    if not path.exists():
-        return
-    _, fields, _ = read_dataset_file(path)
-    label = "class"
-    schema = build_fields_schema(fields, label)
-    now = datetime.now(timezone.utc)
-    row = Dataset(
-        logical_id=logical_id, name="脱敏网络安全样例", version=1,
-        file_path="data/sample/sample_dataset.arff", fields_schema=schema,
-        label_field=label, uploaded_at=now, status=DATASET_STATUS_ACTIVE,
-        change_type="create", is_breaking=False,
-    )
-    db.add(row)
-    db.flush()
-    db.add(DatasetRevision(
-        logical_id=logical_id, dataset_id=row.id, change_type="create", is_breaking=False,
-        mode="new_version", result_dataset_id=row.id, reason="seed sample dataset",
-        summary="首次登记脱敏网络安全样例 v1", detail={"source": "data/sample/sample_dataset.arff"},
-        created_at=now,
-    ))
-    db.commit()
-
-
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     relax_legacy_model_columns()
@@ -149,8 +118,7 @@ def main() -> None:
     try:
         normalize_model_statuses(db)
         seed_algorithms(db)
-        seed_sample_dataset(db)
-        print("C database initialized: algorithms=9, sample_dataset=sample_network_security")
+        print(f"C database initialized: algorithms={len(ALGORITHMS)}")
     finally:
         db.close()
 

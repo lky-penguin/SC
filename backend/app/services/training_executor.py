@@ -4,6 +4,7 @@ PMWNB 使用既有服务；A2WNB、MAWNB、EMAWNB、CAVWNB、DIWNB、KFDB、FLNB
 FTAWNB 使用由 scripts/build_nb_algorithm_jars.ps1 编译的真实 Weka 算法服务。
 所有训练指标均来自 Java 分类器，不再生成 mock 指标。
 """
+import json
 import os
 
 import requests
@@ -11,7 +12,6 @@ import requests
 from app.services.algorithm_config import (
     ALGORITHM_SERVICE_URLS,
     PMWNB_SERVICE_URL,
-    PREDICT_SERVICE_URL,
     PREDICT_TIMEOUT,
     TRAIN_TIMEOUT,
     TRAINED_MODEL_DIR,
@@ -19,7 +19,6 @@ from app.services.algorithm_config import (
 
 __all__ = [
     "build_model_save_path",
-    "execute_algorithm_predict",
     "execute_algorithm_service_predict",
     "execute_algorithm_training",
     "execute_pmwnb_training",
@@ -42,20 +41,48 @@ def _request_java_json(
     default_error: str,
 ) -> dict:
     """调用 Java JSON 接口，并统一连接、请求和业务失败的错误转换。"""
+    def response_error_detail() -> str:
+        try:
+            error_payload = resp.json()
+        except ValueError:
+            body = (resp.text or "").strip()
+            return body[:1000] if body else default_error
+        if isinstance(error_payload, dict):
+            detail = error_payload.get("error") or error_payload.get("message")
+            if detail not in (None, ""):
+                if isinstance(detail, (dict, list)):
+                    return json.dumps(detail, ensure_ascii=False)
+                return str(detail)
+        body = (resp.text or "").strip()
+        return body[:1000] if body else default_error
+
     try:
         resp = requests.post(
             f"{url}/{endpoint}",
             json=payload,
             timeout=timeout,
         )
-        resp.raise_for_status()
-        result = resp.json()
     except requests.exceptions.ConnectionError as exc:
         raise RuntimeError(connection_error) from exc
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"{request_error}：{exc}") from exc
+
+    try:
+        result = resp.json()
+    except ValueError as exc:
+        if not resp.ok:
+            raise RuntimeError(response_error_detail()) from exc
+        raise RuntimeError(f"{request_error}：响应不是有效 JSON") from exc
+
+    if not resp.ok:
+        raise RuntimeError(response_error_detail())
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{request_error}：响应 JSON 不是对象")
     if not result.get("success"):
-        raise RuntimeError(result.get("error", default_error))
+        detail = result.get("error") or result.get("message") or default_error
+        if isinstance(detail, (dict, list)):
+            detail = json.dumps(detail, ensure_ascii=False)
+        raise RuntimeError(str(detail))
     return result
 
 
@@ -176,17 +203,6 @@ def _resolve_algorithm_url(algorithm_code: str, pmwnb_url: str) -> tuple[str, st
     return code, url
 
 
-def execute_algorithm_predict(
-    algorithm_code: str,
-    model_path: str,
-    arff_path: str,
-    features: dict,
-    risk_labels: list[str] | None = None,
-) -> dict:
-    code, url = _resolve_algorithm_url(algorithm_code, PREDICT_SERVICE_URL)
-    return _request_predict(url, code, model_path, arff_path, features, risk_labels)
-
-
 def execute_algorithm_service_predict(
     algorithm_code: str,
     model_path: str,
@@ -194,11 +210,10 @@ def execute_algorithm_service_predict(
     features: dict,
     risk_labels: list[str] | None = None,
 ) -> dict:
-    """Use the training service's own /predict endpoint for package smoke tests.
+    """Use the algorithm service's own /predict endpoint for package smoke tests.
 
-    The standalone predict-service remains available for the regular UI path, but a
-    contract package must be smoke-tested by an independently startable Java service
-    that is also part of the local training runtime.
+    The training runtime and prediction runtime are the same Java service, so an
+    exported package is smoke-tested against the exact daemon used for training.
     """
     code, url = _resolve_algorithm_url(algorithm_code, PMWNB_SERVICE_URL)
     return _request_predict(url, code, model_path, arff_path, features, risk_labels)

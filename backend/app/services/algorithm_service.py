@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from app.models.algorithm import Algorithm
 from app.schemas.common import ok
-from app.services.base import ServiceBase, ServiceError, service_call
+from app.services.base import ServiceBase, service_call
 from app.services.constants import ALGORITHM_STATUS_AVAILABLE
 from app.utils.serialization import row_to_dict
 
@@ -16,10 +16,3 @@ class AlgorithmService(ServiceBase):
             stmt = stmt.where(Algorithm.status == ALGORITHM_STATUS_AVAILABLE)
         algorithms = self.db.scalars(stmt).all()
         return ok(data=[row_to_dict(algorithm) for algorithm in algorithms])
-
-    @service_call
-    def get(self, algorithm_id: int):
-        algorithm = self.db.get(Algorithm, algorithm_id)
-        if algorithm is None:
-            raise ServiceError(404, "算法不存在")
-        return ok(data=row_to_dict(algorithm))

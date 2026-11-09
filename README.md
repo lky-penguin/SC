@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- 前端：Vue 3、TypeScript、Vite、Element Plus、ECharts
+- 前端：Vue 3、TypeScript、Vite、Element Plus
 - 后端：FastAPI、SQLAlchemy、PostgreSQL
 - 算法服务：Java / Weka 朴素贝叶斯算法服务
 

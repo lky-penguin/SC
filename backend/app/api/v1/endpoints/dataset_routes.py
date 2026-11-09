@@ -8,7 +8,7 @@ from app.api.sse import sse_response
 from app.api.utils import unwrap
 from app.db import get_db
 from app.schemas.common import ResponseModel
-from app.schemas.dataset import DatasetAnalysisRequest, DatasetCreate, DatasetRevisionRequest, DatasetUpdate
+from app.schemas.dataset import DatasetAnalysisRequest
 from app.services.dataset_analysis_service import DatasetAnalysisService
 from app.services.dataset_service import DatasetService
 
@@ -41,14 +41,6 @@ def preview(dataset_id: int, page: int = Query(1, ge=1), page_size: int = Query(
     return unwrap(DatasetService(db).get_preview(dataset_id, page=page, page_size=page_size))
 
 
-@router.post("", response_model=ResponseModel)
-def create_dataset(payload: DatasetCreate, db: Session = Depends(get_db)):
-    return unwrap(DatasetService(db).create(
-        name=payload.name, file_path=payload.file_path,
-        fields_schema=payload.fields_schema, label_field=payload.label_field,
-    ))
-
-
 @router.post("/upload", response_model=ResponseModel)
 async def upload_dataset(
     file: UploadFile = File(...),
@@ -59,16 +51,6 @@ async def upload_dataset(
     return unwrap(DatasetService(db).upload_from_file(
         name=name, filename=file.filename or "dataset.arff", file_bytes=data,
     ))
-
-
-@router.put("/{dataset_id}", response_model=ResponseModel)
-def update_dataset(dataset_id: int, payload: DatasetUpdate, db: Session = Depends(get_db)):
-    return unwrap(DatasetService(db).update(dataset_id, **payload.model_dump(exclude_unset=True)))
-
-
-@router.post("/{dataset_id}/revisions", response_model=ResponseModel)
-def revise_dataset(dataset_id: int, payload: DatasetRevisionRequest, db: Session = Depends(get_db)):
-    return unwrap(DatasetService(db).revise(dataset_id, **payload.model_dump(exclude_unset=True)))
 
 
 @router.post("/{dataset_id}/revisions/append", response_model=ResponseModel)

@@ -27,11 +27,9 @@ from app.services.dataset_iteration import (
     CHANGE_TYPE_CREATE,
     CHANGE_TYPE_METADATA,
     CHANGE_TYPE_REPLACE_FILE,
-    CHANGE_TYPE_SCHEMA_CHANGE,
     CHANGE_TYPES,
     MODE_IN_PLACE,
     MODE_NEW_VERSION,
-    change_type_label,
     resolve_iteration_policy,
 )
 from app.services.dataset_presenter import dataset_to_dict, revision_to_dict
@@ -383,71 +381,6 @@ class DatasetService(ServiceBase):
         if response.code != 0:
             self._cleanup_unregistered_upload(relative_path)
         return response
-
-    @service_call
-    def revise(
-        self,
-        dataset_id: int,
-        change_type: str,
-        file_path: Optional[str] = None,
-        fields_schema: Optional[List[Dict]] = None,
-        label_field: Optional[str] = None,
-        name: Optional[str] = None,
-        summary: Optional[str] = None,
-        detail: Optional[Dict] = None,
-    ):
-        """数据集迭代统一入口（管理级角色，场景管理员仅自己场景）。
-
-        change_type 取 dataset_iteration.CHANGE_TYPES；是否新开版本由策略决定：
-        破坏结构兼容（字段/标签变更）必然新建版本；兼容迭代（追加/修正样本）在
-        已被模型引用时新建版本，未被引用时原地更新当前版本行（版本号不变）。
-        """
-        dataset, decision = self._revise(
-            dataset_id,
-            change_type,
-            file_path=file_path,
-            fields_schema=fields_schema,
-            label_field=label_field,
-            name=name,
-            summary=summary,
-            detail=detail,
-        )
-        label = change_type_label(change_type)
-        if decision.mode == MODE_NEW_VERSION:
-            message = f"{label}：已新建版本 v{dataset.version}（旧版本保留）"
-        else:
-            message = f"{label}：已原地更新当前版本"
-        return ok(data=self._to_dict(dataset), message=message)
-
-    @service_call
-    def update(
-        self,
-        dataset_id: int,
-        file_path: Optional[str] = None,
-        fields_schema: Optional[List[Dict]] = None,
-        label_field: Optional[str] = None,
-    ):
-        """旧接口（PUT /datasets/{id}）：等价于一次「字段变更 / 文件替换」迭代。
-
-        保留给已有前端调用方；内部统一走 _revise，不再单独维护一套版本逻辑。
-        """
-        change_type = (
-            CHANGE_TYPE_SCHEMA_CHANGE
-            if (fields_schema is not None or label_field is not None)
-            else CHANGE_TYPE_REPLACE_FILE
-        )
-        dataset, decision = self._revise(
-            dataset_id,
-            change_type,
-            file_path=file_path,
-            fields_schema=fields_schema,
-            label_field=label_field,
-        )
-        if decision.mode == MODE_NEW_VERSION:
-            message = "原数据集已被模型引用，已创建新版本（旧版本保留）"
-        else:
-            message = "数据集修改成功"
-        return ok(data=self._to_dict(dataset), message=message)
 
     def _revise(
         self,

@@ -42,9 +42,6 @@ export const getDatasets = async (pageSize = 200): Promise<DatasetRow[]> => {
 export const getAlgorithms = async (): Promise<AlgorithmRow[]> =>
   unwrapData(await request.get('/api/v1/algorithms'));
 
-export const trainModel = async (payload: TrainingPayload): Promise<ModelVersionRow> =>
-  unwrapData(await request.post('/api/v1/model-versions/train', payload));
-
 export const trainModelAsync = async (payload: TrainingPayload): Promise<ModelVersionRow> =>
   unwrapData(await request.post('/api/v1/model-versions/train-async', payload));
 

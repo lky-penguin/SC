@@ -13,7 +13,8 @@ def arff_token(value: Any) -> str:
     if (
         text == ""
         or text != text.strip()
-        or any(ch in text for ch in ",{}'\"\t\n")
+        or any(ch.isspace() for ch in text)
+        or any(ch in text for ch in ",{}'\"%\\")
     ):
         escaped = text.replace("\\", "\\\\").replace("'", "\\'")
         return f"'{escaped}'"

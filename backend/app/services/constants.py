@@ -21,7 +21,6 @@ MODEL_STATUS_TRANSITIONS = {
 }
 
 DATASET_POSITIVE_LABELS = {
-    "sample_network_security": {"anomaly"},
     "kdd_train_20": {"anomaly"},
     "nf_unsw_nb15": {"1"},
     "powergrid_knowledge": {"1"},

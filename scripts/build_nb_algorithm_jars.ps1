@@ -26,11 +26,9 @@ $sources = @(
 $sources += Get-ChildItem (Join-Path $nbRoot "A2WNB"), (Join-Path $nbRoot "CAVWNB"), (Join-Path $nbRoot "DIWNB"), (Join-Path $nbRoot "MVCAVWNB") -Filter *.java -File | Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $nbRoot "FLNB"), (Join-Path $nbRoot "FTAWNB") -Filter *.java -File | Select-Object -ExpandProperty FullName
 # KFDB 仓库源码（KFDB / hdp / tools 三个包）+ 平台适配器 KFDB.java。
-# 排除作者自带的 KFDB_CV / Evaluation / hdp\testing（实验入口与测试 main，平台不用，
-# 且 KFDB_CV 里写死了作者本机数据集路径）。
+# 作者自带的实验入口与测试 main 已删除，运行源码全部纳入编译。
 $sources += Join-Path $kfdbRoot "KFDB.java"
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\KFDB") -Filter *.java -File |
-    Where-Object { $_.Name -notin @("Evaluation.java", "KFDB_CV.java") } |
     Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\hdp") -Filter *.java -File | Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\hdp\logStirling") -Filter *.java -File | Select-Object -ExpandProperty FullName
@@ -52,7 +50,7 @@ $manifest = Join-Path $buildRoot "MANIFEST.MF"
     ""
 ) | Set-Content -LiteralPath $manifest -Encoding ascii
 
-# 单个服务 JAR：5 个算法（A2WNB/CAVWNB/DIWNB/MAWNB/EMAWNB）由同一个进程提供，
+# 单个服务 JAR：8 个算法（A2WNB/CAVWNB/DIWNB/MAWNB/EMAWNB/KFDB/FLNB/FTAWNB）由同一个进程提供，
 # 算法随请求体的 algorithm_code 指定，因此只需要一个包含全部算法类的 JAR。
 # 合并前这里是 5 个 JAR，但打包命令始终用 -C $classes .（整个目录），
 # 传入的 $Entries 从未被使用，5 个文件因此字节完全相同——本次一并去掉这个死参数。

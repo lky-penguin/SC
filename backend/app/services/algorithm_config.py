@@ -7,7 +7,6 @@ from app.services.constants import ALGORITHM_CODES
 
 
 PMWNB_SERVICE_URL = os.getenv("PMWNB_SERVICE_URL", "http://127.0.0.1:18211")
-PREDICT_SERVICE_URL = os.getenv("PREDICT_SERVICE_URL", "http://127.0.0.1:12314")
 TRAIN_TIMEOUT = int(os.getenv("NB_TRAIN_TIMEOUT", "600"))
 PREDICT_TIMEOUT = int(os.getenv("NB_PREDICT_TIMEOUT", "60"))
 # 8 个 NB 算法共用同一个服务进程：jar 字节完全相同，算法由请求体的 algorithm_code 指定。

@@ -45,10 +45,6 @@ export default defineConfig({
       'dompurify',
       'marked',
       'element-plus',
-      'echarts/core',
-      'echarts/charts',
-      'echarts/components',
-      'echarts/renderers',
     ],
   },
 });

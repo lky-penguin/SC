@@ -5,7 +5,7 @@
 """
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import select
 
@@ -330,22 +330,6 @@ class ModelVersionService(ServiceBase):
             risk_labels,
         )
 
-    @service_call
-    def complete_training(self, model_id: int, evaluation_metrics: Dict[str, Any]):
-        """训练成功：TRAINING -> COMPLETED，保存评估指标。"""
-        if not isinstance(evaluation_metrics, dict):
-            raise ServiceError(400, "evaluation_metrics 必须是 JSON 对象")
-        model = self._get(model_id)
-        self.apply_training_success(model, evaluation_metrics)
-        return ok(data=self._to_dict(model), message="训练完成")
-
-    @service_call
-    def fail_training(self, model_id: int, error_message: Optional[str] = None):
-        """训练失败：TRAINING -> FAILED。"""
-        model = self._get(model_id)
-        self._store_training_failure(model, error_message, reset_metrics=False)
-        return ok(data=self._to_dict(model), message="训练失败")
-
     # ------------------------------------------------------------------
     # 查询
     # ------------------------------------------------------------------
@@ -369,25 +353,6 @@ class ModelVersionService(ServiceBase):
     def get(self, model_id: int):
         """模型版本详情（含评估指标）。"""
         return ok(data=self._to_dict(self._get(model_id), include_model_attributes=True))
-
-    @service_call
-    def compare(self, model_ids: List[int]):
-        """返回多个模型的评估指标，供前端横向对比。"""
-        if not model_ids:
-            raise ServiceError(400, "缺少模型版本 ID 列表")
-        results: List[dict] = []
-        for model_id in model_ids:
-            model = self._get(model_id)
-            results.append(
-                {
-                    "model_version_id": model.id,
-                    "dataset_id": model.dataset_id,
-                    "algorithm_id": model.algorithm_id,
-                    "evaluation_metrics": dict(model.evaluation_metrics or {}),
-                    "status": model.status,
-                }
-            )
-        return ok(data=results)
 
     # ------------------------------------------------------------------
     # 删除

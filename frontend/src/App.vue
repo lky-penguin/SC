@@ -7,7 +7,7 @@ const route = useRoute();
 const router = useRouter();
 const settingsVisible = ref(false);
 const navItems = [
-  { path: '/datasets', label: '数据集中心' },
+  { path: '/datasets', label: '态势感知数据集中心' },
   { path: '/risk', label: '贝叶斯网络模型训练' },
   { path: '/models', label: '贝叶斯网络模型中心' },
 ];

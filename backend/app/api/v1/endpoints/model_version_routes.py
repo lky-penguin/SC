@@ -1,4 +1,4 @@
-"""模型训练、评估、对比与模型文件导出接口。"""
+"""模型训练、评估与模型文件导出接口。"""
 from datetime import datetime, timezone
 import io
 from pathlib import Path
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.utils import unwrap
 from app.db import get_db
 from app.schemas.common import ResponseModel
-from app.schemas.model_version import ModelVersionCompare, ModelVersionCreate, ModelVersionExportBatch
+from app.schemas.model_version import ModelVersionCreate, ModelVersionExportBatch
 from app.services.model_package_service import ModelPackageService
 from app.services.model_version_service import ModelVersionService
 
@@ -21,16 +21,6 @@ router = APIRouter(prefix="/model-versions", tags=["模型训练"])
 @router.get("", response_model=ResponseModel)
 def list_models(dataset_id: int | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=200), db: Session = Depends(get_db)):
     return unwrap(ModelVersionService(db).get_list(dataset_id=dataset_id, page=page, page_size=page_size))
-
-
-@router.post("/compare", response_model=ResponseModel)
-def compare(payload: ModelVersionCompare, db: Session = Depends(get_db)):
-    return unwrap(ModelVersionService(db).compare(payload.model_ids))
-
-
-@router.post("", response_model=ResponseModel)
-def create_model(payload: ModelVersionCreate, db: Session = Depends(get_db)):
-    return unwrap(ModelVersionService(db).create(payload.dataset_id, payload.algorithm_id, payload.training_parameters))
 
 
 @router.post("/train", response_model=ResponseModel)

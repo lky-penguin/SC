@@ -7,5 +7,4 @@ pydantic>=2.8
 requests>=2.32
 openai>=1.40
 cryptography>=42
-pandas>=2.1
 python-multipart>=0.0.9

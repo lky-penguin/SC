@@ -45,15 +45,6 @@ export const getModelVersionPage = async (params?: ModelVersionQuery): Promise<M
   return { items: data.items ?? [], total: data.total ?? 0, page: data.page ?? 1, page_size: data.page_size ?? 10 };
 };
 
-export const getModelVersionList = async (params?: ModelVersionQuery): Promise<BackendModelVersion[]> =>
-  (await getModelVersionPage(params)).items;
-
-export const trainModel = async (params: {
-  dataset_id: string | number;
-  algorithm_id: string | number;
-  training_parameters: Record<string, unknown>;
-}): Promise<BackendModelVersion> => unwrapData(await request.post('/api/v1/model-versions/train', params));
-
 export const deleteModelVersion = async (modelId: number | string): Promise<void> => {
   await unwrapData(await request.delete(`/api/v1/model-versions/${modelId}`));
 };
