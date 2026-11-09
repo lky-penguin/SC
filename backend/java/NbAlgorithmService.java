@@ -140,11 +140,24 @@ public final class NbAlgorithmService {
         return classifier;
     }
 
-    /** 训练完成后把新模型放进缓存（同样先按预算腾空间）。 */
-    private static void cacheModel(String modelPath, Classifier classifier) {
-        long estimated = estimateModelBytes(modelPath);
-        evictFor(estimated);
-        MODEL_CACHE.put(modelPath, new CachedModel(classifier, estimated));
+    /**
+     * 训练期间不保留任何预测模型缓存。
+     *
+     * A2WNB 等算法在 278 属性数据集上单模型可达 181 MB。-Xmx384m 下，如果上一个
+     * 训练模型仍被缓存引用，下一次训练在交叉验证阶段就会 Java heap space。训练前
+     * 清理一次，训练结束（无论成功/失败）再清理一次，确保下一次训练从干净堆开始。
+     */
+    private static void releaseModelCache(String phase) {
+        int count;
+        synchronized (MODEL_CACHE) {
+            count = MODEL_CACHE.size();
+            MODEL_CACHE.clear();
+        }
+        if (count > 0) {
+            System.out.println("[NbAlgorithmService] " + phase + "释放模型缓存 " + count + " 个");
+        }
+        // 清理后主动触发一次 Full GC；本服务使用 Serial GC，调用是同步的。
+        System.gc();
     }
 
     /** 本服务支持的算法（同一个进程同时服务全部算法，8 个算法共用同一份字节码）。 */
@@ -234,68 +247,8 @@ public final class NbAlgorithmService {
     private static void handleTrain(HttpExchange ex) throws IOException {
         try {
             JSONObject req = new JSONObject(readBody(ex));
-            String algorithmCode = resolveAlgorithmCode(req);
-            String datasetPath = req.getString("dataset_path");
-            String modelSavePath = req.optString("model_save_path", "");
-            if (modelSavePath.isEmpty()) {
-                throw new IllegalArgumentException("缺少 model_save_path");
-            }
-
-            long started = System.nanoTime();
-            Instances data = loadDataset(datasetPath);
-            JSONObject parameters = req.optJSONObject("training_parameters");
-            JSONObject effectiveParameters = parameters == null ? new JSONObject() : parameters;
-
-            // 顺序很关键：**先交叉验证，再训练全量模型**。
-            //
-            // 全量模型和 CV 的折模型都是百 MB 级对象 —— 本数据集 279 属性，序列化后
-            // 189 MB，堆内约 265 MB，-Xmx384m 只装得下一个。若按「先训全量、再跑 CV」
-            // 的顺序，CV 每折 buildClassifier 时全量模型还活着（还被下面的局部变量
-            // classifier 引用），两个 265 MB 对象叠加，实测 3 秒即 OutOfMemoryError。
-            // CV 放在前面，折模型用完即弃，堆里任何时刻只有一个训练好的模型。
-            //
-            // CV 的模板必须是**未训练**的：makeCopy 的实现是「把整个分类器序列化成
-            // 一个 byte[] 再反序列化」，传已训练模型进去等于凭空再复制两份。
-            // 每折本来就要 buildClassifier(train) 重新训练，复制已训练模型没有任何收益。
-            JSONObject quality = calculateQualityMetrics(
-                    createClassifier(effectiveParameters, algorithmCode),
-                    data,
-                    req.optJSONArray("risk_labels"));
-
-            // 评估指标使用固定随机种子的分层交叉验证（避免训练集重代入偏乐观）；
-            // 保存的模型用全量数据训练。
-            Classifier classifier = createClassifier(effectiveParameters, algorithmCode);
-            classifier.buildClassifier(data);
-            SerializationHelper.write(modelSavePath, classifier);
-            cacheModel(modelSavePath, classifier);
-
-            JSONArray distribution = new JSONArray();
-            for (int i = 0; i < data.numClasses(); i++) {
-                distribution.put(new JSONObject().put("class", data.classAttribute().value(i))
-                        .put("count", countClass(data, i)));
-            }
-
-            JSONObject metrics = new JSONObject()
-                    .put("algorithm", algorithmCode)
-                    .put("accuracy", quality.get("accuracy"))
-                    .put("precision", quality.get("precision"))
-                    .put("recall", quality.get("recall"))
-                    .put("f1", quality.get("f1"))
-                    .put("specificity", quality.get("specificity"))
-                    .put("g_mean", quality.get("g_mean"))
-                    .put("risk_recall", quality.get("risk_recall"))
-                    .put("risk_f1", quality.get("risk_f1"))
-                    .put("cv_mean", quality.get("cv_mean"))
-                    .put("cv_std", quality.get("cv_std"))
-                    .put("quality_availability", quality.get("quality_availability"))
-                    .put("train_time_s", round((System.nanoTime() - started) / 1_000_000_000.0))
-                    .put("num_instances", data.numInstances())
-                    .put("num_attributes", data.numAttributes() - 1)
-                    .put("num_classes", data.numClasses())
-                    .put("class_distribution", distribution)
-                    .put("model_saved_to", modelSavePath)
-                    .put("dataset", datasetPath);
-            metrics.put("training_parameters", parameters == null ? new JSONObject() : parameters);
+            // 训练逻辑放在独立调用栈中，返回后训练数据/分类器就不再持有，finally 可立即回收。
+            JSONObject metrics = executeTraining(req);
             respond(ex, 200, new JSONObject().put("success", true).put("metrics", metrics));
         } catch (Throwable e) {
             // 必须是 Throwable 而不是 Exception：OutOfMemoryError 继承自 Error，
@@ -303,7 +256,79 @@ public final class NbAlgorithmService {
             // 客户端只能等到自己的超时（后端 TRAIN_TIMEOUT=600s），而模型文件其实
             // 已经写到盘上了 —— 表现为"训练卡住十分钟后失败，却留下一个孤儿模型"。
             respond(ex, 500, new JSONObject().put("success", false).put("error", message(e)));
+        } finally {
+            // 训练结束后不再保留训练模型；下一次训练和预测都从磁盘按需加载。
+            releaseModelCache("训练结束后");
         }
+    }
+
+    /** 执行训练并只返回可序列化指标；训练对象随本方法返回立即变成可回收对象。 */
+    private static JSONObject executeTraining(JSONObject req) throws Exception {
+        String algorithmCode = resolveAlgorithmCode(req);
+        String datasetPath = req.getString("dataset_path");
+        String modelSavePath = req.optString("model_save_path", "");
+        if (modelSavePath.isEmpty()) {
+            throw new IllegalArgumentException("缺少 model_save_path");
+        }
+
+        // 大模型训练与预测缓存不能同时占用堆内存。先释放上一轮缓存，再开始 CV。
+        releaseModelCache("训练开始前");
+
+        long started = System.nanoTime();
+        Instances data = loadDataset(datasetPath);
+        JSONObject parameters = req.optJSONObject("training_parameters");
+        JSONObject effectiveParameters = parameters == null ? new JSONObject() : parameters;
+
+        // 顺序很关键：**先交叉验证，再训练全量模型**。
+        //
+        // 全量模型和 CV 的折模型都是百 MB 级对象 —— 本数据集 279 属性，序列化后
+        // 189 MB，堆内约 265 MB，-Xmx384m 只装得下一个。若按「先训全量、再跑 CV」
+        // 的顺序，CV 每折 buildClassifier 时全量模型还活着（还被下面的局部变量
+        // classifier 引用），两个 265 MB 对象叠加，实测 3 秒即 OutOfMemoryError。
+        // CV 放在前面，折模型用完即弃，堆里任何时刻只有一个训练好的模型。
+        //
+        // CV 的模板必须是**未训练**的：makeCopy 的实现是「把整个分类器序列化成
+        // 一个 byte[] 再反序列化」，传已训练模型进去等于凭空再复制两份。
+        // 每折本来就要 buildClassifier(train) 重新训练，复制已训练模型没有任何收益。
+        JSONObject quality = calculateQualityMetrics(
+                createClassifier(effectiveParameters, algorithmCode),
+                data,
+                req.optJSONArray("risk_labels"));
+
+        // 评估指标使用固定随机种子的分层交叉验证（避免训练集重代入偏乐观）；
+        // 保存的模型用全量数据训练。
+        Classifier classifier = createClassifier(effectiveParameters, algorithmCode);
+        classifier.buildClassifier(data);
+        SerializationHelper.write(modelSavePath, classifier);
+
+        JSONArray distribution = new JSONArray();
+        for (int i = 0; i < data.numClasses(); i++) {
+            distribution.put(new JSONObject().put("class", data.classAttribute().value(i))
+                    .put("count", countClass(data, i)));
+        }
+
+        JSONObject metrics = new JSONObject()
+                .put("algorithm", algorithmCode)
+                .put("accuracy", quality.get("accuracy"))
+                .put("precision", quality.get("precision"))
+                .put("recall", quality.get("recall"))
+                .put("f1", quality.get("f1"))
+                .put("specificity", quality.get("specificity"))
+                .put("g_mean", quality.get("g_mean"))
+                .put("risk_recall", quality.get("risk_recall"))
+                .put("risk_f1", quality.get("risk_f1"))
+                .put("cv_mean", quality.get("cv_mean"))
+                .put("cv_std", quality.get("cv_std"))
+                .put("quality_availability", quality.get("quality_availability"))
+                .put("train_time_s", round((System.nanoTime() - started) / 1_000_000_000.0))
+                .put("num_instances", data.numInstances())
+                .put("num_attributes", data.numAttributes() - 1)
+                .put("num_classes", data.numClasses())
+                .put("class_distribution", distribution)
+                .put("model_saved_to", modelSavePath)
+                .put("dataset", datasetPath);
+        metrics.put("training_parameters", parameters == null ? new JSONObject() : parameters);
+        return metrics;
     }
 
     private static void handlePredict(HttpExchange ex) throws IOException {

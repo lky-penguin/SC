@@ -44,7 +44,7 @@ const openUploadDialog = () => {
   uploadDialogVisible.value = true;
 };
 const submitNewDataset = async () => {
-  if (!uploadForm.value.name.trim()) return void ElMessage.warning('请填写数据集名称');
+  if (!uploadForm.value.name.trim()) return void ElMessage.warning('请填写态势感知数据集名称');
   if (!selectedFile.value) return void ElMessage.warning('请选择要上传的 ARFF / CSV 文件');
   try {
     await uploadDatasetFile({
@@ -304,7 +304,7 @@ onBeforeUnmount(() => {
         empty-text="暂无数据集"
         row-class-name="dataset-table-row"
       >
-        <el-table-column prop="name" label="数据集名称" min-width="190" show-overflow-tooltip>
+        <el-table-column prop="name" label="态势感知数据集名称" min-width="190" show-overflow-tooltip>
           <template #default="{ row }: { row: Dataset }">
             <span class="dataset-table__name">{{ row.name }}</span>
           </template>
@@ -383,7 +383,7 @@ onBeforeUnmount(() => {
     >
       <div class="upload-form">
         <div class="upload-form__row">
-          <label class="upload-form__label">数据集名称<span class="required">*</span></label>
+          <label class="upload-form__label">态势感知数据集名称<span class="required">*</span></label>
           <input
             v-model.trim="uploadForm.name"
             class="upload-form__input"

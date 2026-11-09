@@ -89,7 +89,7 @@ export const useTrainingJobStore = defineStore('trainingJob', {
       if (job.status === COMPLETED) {
         ElNotification({
           title: '模型训练完成',
-          message: `《${job.title}》已训练完成，可在模型中心查看评价或导出`,
+          message: `《${job.title}》已训练完成，可在贝叶斯网络模型中心查看评价或导出`,
           type: 'success',
         });
         return;
@@ -108,7 +108,7 @@ export const useTrainingJobStore = defineStore('trainingJob', {
       this.jobs = this.jobs.filter((item) => item.modelVersionId !== job.modelVersionId);
       ElNotification({
         title: '模型训练仍在进行',
-        message: `《${job.title}》等待超时，训练可能仍在后台继续，可稍后在模型中心查看`,
+        message: `《${job.title}》等待超时，训练可能仍在后台继续，可稍后在贝叶斯网络模型中心查看`,
         type: 'warning',
         duration: 0,
       });

@@ -8,8 +8,8 @@ const router = useRouter();
 const settingsVisible = ref(false);
 const navItems = [
   { path: '/datasets', label: '数据集中心' },
-  { path: '/risk', label: 'AI模型训练' },
-  { path: '/models', label: '模型中心' },
+  { path: '/risk', label: '贝叶斯网络模型训练' },
+  { path: '/models', label: '贝叶斯网络模型中心' },
 ];
 const activePath = computed(() => navItems.find((item) => route.path.startsWith(item.path))?.path ?? route.path);
 </script>
@@ -18,7 +18,7 @@ const activePath = computed(() => navItems.find((item) => route.path.startsWith(
   <div class="app-shell">
     <div class="app-shell__backdrop"></div>
     <header class="topbar">
-      <h1 class="topbar__title">风险数据集迭代与贝叶斯模型训练评估系统</h1>
+      <h1 class="topbar__title">基于贝叶斯网络的复杂系统态势感知软件</h1>
       <div class="topbar__actions">
         <nav class="nav-tabs" aria-label="业务导航">
           <button

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(ENV_PATH)
 
-APP_NAME = "风险数据集迭代与贝叶斯模型训练评估系统"
+APP_NAME = "基于贝叶斯网络的复杂系统态势感知软件"
 APP_SLUG = "C-data-model"
 APP_VERSION = "1.0.0"
 API_PORT = int(os.getenv("PORT", "18201"))

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 模型中心：训练版本、指标、对比、AI 评价、导出与删除。 */
+/** 贝叶斯网络模型中心：训练版本、指标、对比、AI 评价、导出与删除。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import DOMPurify from 'dompurify';
@@ -576,7 +576,7 @@ onMounted(async () => {
     await loadModels(1);
     ready.value = true;
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '初始化模型中心失败';
+    error.value = err instanceof Error ? err.message : '初始化贝叶斯网络模型中心失败';
     loading.value = false;
   }
 });
