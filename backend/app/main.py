@@ -1,107 +1,90 @@
-"""软件 C 个人本地入口：真实 Java 贝叶斯训练与模型管理。"""
 from __future__ import annotations
-
 import logging
-import os
-import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-
 import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.types import Scope
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from app.api.v1 import api_router
-from app.config import APP_NAME, APP_SLUG, APP_VERSION
+from app.config import API_PORT, APP_NAME, APP_SLUG, APP_VERSION, FRONTEND_PORT
+from app.db import engine
 from app.paths import PROJECT_ROOT
+from app.services import training_runner
 from app.services.algorithm_config import NB_ALGORITHM_SERVICE_URL, PMWNB_SERVICE_URL
-
 logger = logging.getLogger(__name__)
-WEB_ROOT = PROJECT_ROOT / "frontend"
-DIST_ROOT = WEB_ROOT / "dist"
-SITE_ROOT = DIST_ROOT if (DIST_ROOT / "index.html").exists() else WEB_ROOT
-
-
+JAVA_SERVICES = {
+    "pmwnb": PMWNB_SERVICE_URL,
+    "nb": NB_ALGORITHM_SERVICE_URL,
+}
 class SPAStaticFiles(StaticFiles):
-    def __init__(self, *, api_prefixes: tuple[str, ...] = ("/api/",), **kwargs: object) -> None:
-        super().__init__(**kwargs)
-        self._api_prefixes = api_prefixes
-
+    _api_prefixes = ("/api/",)
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code != 404:
                 raise
-            if scope.get("path", "").startswith(self._api_prefixes):
+            if scope.get("path", "").startswith(self._api_prefixes):  # API保持404，防止回退到SPA
                 raise
-            if "." in path.rsplit("/", 1)[-1]:
+            if "." in path.rsplit("/", 1)[-1]:  # 资源缺失时保持404，防止坏资源变成页面
                 raise
             return await super().get_response("index.html", scope)
-
-
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    from app.services.training_runner import start, stop
-    start()
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    training_runner.start()  # 训练队列跟随Web进程
     try:
         yield
     finally:
-        stop()
-
-
-def _java_health() -> dict:
-    result = {}
-    for name, url in (("pmwnb", PMWNB_SERVICE_URL), ("nb", NB_ALGORITHM_SERVICE_URL)):
-        try:
-            response = requests.get(f"{url}/health", timeout=3)
-            result[name] = {"ok": response.ok, "body": response.json() if response.ok else response.text[:200]}
-        except Exception as exc:  # noqa: BLE001
-            result[name] = {"ok": False, "error": str(exc)}
-    return result
-
-
+        training_runner.stop()
 def create_app() -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:18202", "http://localhost:18202"],
+        allow_origins=[
+            f"http://127.0.0.1:{FRONTEND_PORT}",
+            f"http://localhost:{FRONTEND_PORT}",
+        ],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     app.include_router(api_router)
-
     @app.get("/api/health", tags=["运行状态"])
-    def health():
-        from sqlalchemy import text
-        from app.db import engine
+    def health() -> dict[str, object]:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        java = _java_health()
+        java: dict[str, bool] = {}
+        for name, url in JAVA_SERVICES.items():
+            try:
+                with requests.get(f"{url}/health", timeout=1.0) as response:
+                    java[name] = response.ok
+                    if not response.ok:
+                        logger.warning("Java服务%s健康检查返回HTTP %s", name, response.status_code)
+            except requests.RequestException as exc:
+                logger.warning("Java服务%s健康检查失败: %s", name, exc)
+                java[name] = False
         return {
             "status": "ok",
             "app": APP_SLUG,
             "name": APP_NAME,
             "version": APP_VERSION,
-            "database": "postgresql",
+            "database": engine.dialect.name,
             "java": java,
-            "java_ready": all(item.get("ok") for item in java.values()),
-            "port": int(os.getenv("PORT", "18201")),
+            "java_ready": all(java.values()),
+            "port": API_PORT,
         }
-
-    if (SITE_ROOT / "index.html").exists():
-        app.mount("/", SPAStaticFiles(directory=str(SITE_ROOT), html=True), name="web")
+    web_root = PROJECT_ROOT / "frontend"
+    dist_root = web_root / "dist"
+    site_root = dist_root if (dist_root / "index.html").is_file() else web_root  # 先使用构建产物，未构建时回到源码目录
+    if (site_root / "index.html").is_file():
+        app.mount("/", SPAStaticFiles(directory=str(site_root), html=True), name="web")
     return app
-
-
 app = create_app()
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("PORT", "18201")))
+    uvicorn.run(app, host="127.0.0.1", port=API_PORT)

@@ -1,9 +1,9 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
-$nbRoot = Join-Path $repo "backend\java\algorithm-src\NB"
+$nbRoot = Join-Path $repo "java\algorithm-src\NB"
 $pmwnbJar = Join-Path $repo "backend\lib\pmwnb-service.jar"
-$buildRoot = Join-Path $repo "backend\java\.build-nb"
+$buildRoot = Join-Path $repo "java\.build-nb"
 $classes = Join-Path $buildRoot "classes"
 $lib = Join-Path $repo "backend\lib"
 $kfdbRoot = Join-Path $nbRoot "KFDB"
@@ -19,9 +19,10 @@ if (Test-Path $buildRoot) { Remove-Item -LiteralPath $buildRoot -Recurse -Force 
 New-Item -ItemType Directory -Path $classes -Force | Out-Null
 
 $sources = @(
-    (Join-Path $repo "backend\java\NbAlgorithmService.java"),
-    (Join-Path $repo "backend\java\compat\WANBIA.java"),
-    (Join-Path $repo "backend\java\compat\DiscreteEstimator.java")
+    (Join-Path $repo "java\NbAlgorithmService.java"),
+    (Join-Path $repo "java\common\AlgorithmServiceSupport.java"),
+    (Join-Path $repo "java\compat\WANBIA.java"),
+    (Join-Path $repo "java\compat\DiscreteEstimator.java")
 )
 $sources += Get-ChildItem (Join-Path $nbRoot "A2WNB"), (Join-Path $nbRoot "CAVWNB"), (Join-Path $nbRoot "DIWNB"), (Join-Path $nbRoot "MVCAVWNB") -Filter *.java -File | Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $nbRoot "FLNB"), (Join-Path $nbRoot "FTAWNB") -Filter *.java -File | Select-Object -ExpandProperty FullName
@@ -34,7 +35,7 @@ $sources += Get-ChildItem (Join-Path $kfdbRoot "src\hdp") -Filter *.java -File |
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\hdp\logStirling") -Filter *.java -File | Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\hdp\logStirling\cache") -Filter *.java -File | Select-Object -ExpandProperty FullName
 $sources += Get-ChildItem (Join-Path $kfdbRoot "src\tools") -Filter *.java -File | Select-Object -ExpandProperty FullName
-$sources += Get-ChildItem (Join-Path $repo "backend\java\compat") -Filter *.java -File -Recurse | Select-Object -ExpandProperty FullName
+$sources += Get-ChildItem (Join-Path $repo "java\compat") -Filter *.java -File -Recurse | Select-Object -ExpandProperty FullName
 
 Write-Host "Compiling supplied NB Java sources..."
 # KFDB 的 hdp 包依赖 mltools（MLTools.jar）与 commons-math3；只在编译期需要 mltools

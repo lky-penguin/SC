@@ -2,10 +2,10 @@ $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $baseJar = Join-Path $repo "backend\lib\pmwnb-service.jar"
-$buildRoot = Join-Path $repo "backend\java\.build-pmwnb-service"
+$buildRoot = Join-Path $repo "java\.build-pmwnb-service"
 $classes = Join-Path $buildRoot "classes"
 $baseSnapshot = Join-Path $buildRoot "pmwnb-base.jar"
-$serviceSource = Join-Path $repo "backend\java\pmwnb-service\PmwnbService.java"
+$serviceSource = Join-Path $repo "java\pmwnb-service\PmwnbService.java"
 $targetJar = Join-Path $repo "backend\lib\pmwnb-service.jar"
 
 if (-not (Test-Path -LiteralPath $baseJar)) { throw "找不到 PMWNB JAR: $baseJar" }
@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Path $classes -Force | Out-Null
 Copy-Item -LiteralPath $baseJar -Destination $baseSnapshot -Force
 
 Write-Host "Compiling configurable PMWNB service from $serviceSource ..."
-& javac -encoding UTF-8 -cp $baseSnapshot -d $classes $serviceSource
+& javac -encoding UTF-8 -cp $baseSnapshot -d $classes $serviceSource (Join-Path $repo "java\common\AlgorithmServiceSupport.java")
 if ($LASTEXITCODE -ne 0) { throw "PMWNB service javac 编译失败" }
 
 # Keep the original PMWNB implementation and shaded dependencies. Replace only

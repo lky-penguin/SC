@@ -1,14 +1,7 @@
-"""Java 算法训练/预测执行器。
-
-PMWNB 使用既有服务；A2WNB、MAWNB、EMAWNB、CAVWNB、DIWNB、KFDB、FLNB、
-FTAWNB 使用由 scripts/build_nb_algorithm_jars.ps1 编译的真实 Weka 算法服务。
-所有训练指标均来自 Java 分类器，不再生成 mock 指标。
-"""
+# Java算法训练和预测执行器
 import json
 import os
-
 import requests
-
 from app.services.algorithm_config import (
     ALGORITHM_SERVICE_URLS,
     PMWNB_SERVICE_URL,
@@ -16,76 +9,65 @@ from app.services.algorithm_config import (
     TRAIN_TIMEOUT,
     TRAINED_MODEL_DIR,
 )
-
 __all__ = [
     "build_model_save_path",
     "execute_algorithm_service_predict",
     "execute_algorithm_training",
     "execute_pmwnb_training",
 ]
-
-
-def _require_existing_file(path: str, kind: str) -> None:
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{kind}文件不存在: {path}")
-
-
 def _request_java_json(
     url: str,
     endpoint: str,
     payload: dict,
     timeout: int,
-    *,
-    connection_error: str,
-    request_error: str,
-    default_error: str,
+    operation: str,
+    connection_hint: str = "",
 ) -> dict:
-    """调用 Java JSON 接口，并统一连接、请求和业务失败的错误转换。"""
-    def response_error_detail() -> str:
-        try:
-            error_payload = resp.json()
-        except ValueError:
-            body = (resp.text or "").strip()
-            return body[:1000] if body else default_error
-        if isinstance(error_payload, dict):
-            detail = error_payload.get("error") or error_payload.get("message")
-            if detail not in (None, ""):
-                if isinstance(detail, (dict, list)):
-                    return json.dumps(detail, ensure_ascii=False)
-                return str(detail)
-        body = (resp.text or "").strip()
-        return body[:1000] if body else default_error
-
     try:
-        resp = requests.post(
-            f"{url}/{endpoint}",
+        response = requests.post(
+            f"{url.rstrip('/')}/{endpoint}",
             json=payload,
             timeout=timeout,
         )
     except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(connection_error) from exc
+        message = f"无法连接到{operation}服务（{url}）"
+        if connection_hint:
+            message += f"，{connection_hint}"
+        raise RuntimeError(message) from exc
     except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"{request_error}：{exc}") from exc
-
+        raise RuntimeError(f"{operation}请求失败：{exc}") from exc
     try:
-        result = resp.json()
+        result = response.json()
     except ValueError as exc:
-        if not resp.ok:
-            raise RuntimeError(response_error_detail()) from exc
-        raise RuntimeError(f"{request_error}：响应不是有效 JSON") from exc
-
-    if not resp.ok:
-        raise RuntimeError(response_error_detail())
-    if not isinstance(result, dict):
-        raise RuntimeError(f"{request_error}：响应 JSON 不是对象")
-    if not result.get("success"):
-        detail = result.get("error") or result.get("message") or default_error
+        if not response.ok:
+            message = (response.text or "").strip()[:1000]
+            raise RuntimeError(message or f"{operation}失败") from exc
+        raise RuntimeError(f"{operation}服务响应不是有效 JSON") from exc
+    if not response.ok:
+        detail = None
+        if isinstance(result, dict):
+            detail = result.get("error") or result.get("message")
         if isinstance(detail, (dict, list)):
             detail = json.dumps(detail, ensure_ascii=False)
-        raise RuntimeError(str(detail))
+        message = detail or (response.text or "").strip()[:1000]
+        raise RuntimeError(str(message or f"{operation}失败"))
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{operation}服务返回的数据格式不正确")
+    if not result.get("success"):
+        detail = result.get("error") or result.get("message")
+        if isinstance(detail, (dict, list)):
+            detail = json.dumps(detail, ensure_ascii=False)
+        raise RuntimeError(str(detail or f"{operation}失败"))
     return result
-
-
+def _resolve_algorithm_url(algorithm_code: str) -> tuple[str, str]:
+    code = algorithm_code.strip().upper()
+    if code == "PMWNB":
+        url = PMWNB_SERVICE_URL
+    else:
+        url = ALGORITHM_SERVICE_URLS.get(code)
+    if not url:
+        raise RuntimeError(f"未配置{code}算法服务")
+    return code, url
 def _request_train(
     url: str,
     algorithm_code: str,
@@ -94,26 +76,29 @@ def _request_train(
     training_parameters: dict | None = None,
     risk_labels: list[str] | None = None,
 ) -> dict:
-    _require_existing_file(dataset_path, "数据集")
+    if not os.path.isfile(dataset_path):
+        raise FileNotFoundError(f"数据集文件不存在:{dataset_path}")
+    payload = {
+        "algorithm_code": algorithm_code,
+        "dataset_path": dataset_path,
+        "model_save_path": model_save_path,
+        "training_parameters": training_parameters or {},
+        "risk_labels": risk_labels or [],
+    }
     result = _request_java_json(
         url,
         "train",
-        {
-            "algorithm_code": algorithm_code,
-            "dataset_path": dataset_path,
-            "model_save_path": model_save_path,
-            "training_parameters": training_parameters or {},
-            "risk_labels": risk_labels or [],
-        },
+        payload,
         TRAIN_TIMEOUT,
-        connection_error=(
-            f"无法连接到 {algorithm_code} 算法服务（{url}），"
-            "请先运行 start_all.ps1 启动 Java 算法服务"
-        ),
-        request_error=f"{algorithm_code} 算法服务请求失败（{url}）",
-        default_error=f"{algorithm_code} 训练失败",
+        f"{algorithm_code}训练",
+        "请先运行start_all.ps1启动Java算法服务",
     )
-    metrics = result["metrics"]
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict):
+        raise RuntimeError(f"{algorithm_code}训练服务未返回有效指标")
+    for key in ("accuracy", "f1", "recall", "precision"):
+        if key not in metrics:
+            raise RuntimeError(f"{algorithm_code}训练结果缺少指标:{key}")
     return {
         "source": f"java_{algorithm_code.lower()}",
         "algorithm_code": algorithm_code,
@@ -136,8 +121,6 @@ def _request_train(
         "model_saved_to": metrics.get("model_saved_to", model_save_path),
         "dataset": metrics.get("dataset", dataset_path),
     }
-
-
 def execute_algorithm_training(
     algorithm_code: str,
     dataset_path: str,
@@ -145,12 +128,15 @@ def execute_algorithm_training(
     training_parameters: dict | None = None,
     risk_labels: list[str] | None = None,
 ) -> dict:
-    code, url = _resolve_algorithm_url(algorithm_code, PMWNB_SERVICE_URL)
+    code, url = _resolve_algorithm_url(algorithm_code)
     return _request_train(
-        url, code, dataset_path, model_save_path, training_parameters, risk_labels
+        url,
+        code,
+        dataset_path,
+        model_save_path,
+        training_parameters,
+        risk_labels,
     )
-
-
 def execute_pmwnb_training(
     dataset_path: str,
     model_save_path: str,
@@ -158,15 +144,16 @@ def execute_pmwnb_training(
     risk_labels: list[str] | None = None,
 ) -> dict:
     return execute_algorithm_training(
-        "PMWNB", dataset_path, model_save_path, training_parameters, risk_labels
+        "PMWNB",
+        dataset_path,
+        model_save_path,
+        training_parameters,
+        risk_labels,
     )
-
-
 def build_model_save_path(model_id: int, algorithm_code: str = "PMWNB") -> str:
     os.makedirs(TRAINED_MODEL_DIR, exist_ok=True)
-    return os.path.join(TRAINED_MODEL_DIR, f"{algorithm_code.lower()}_mv{model_id}.model")
-
-
+    filename = f"{algorithm_code.lower()}_mv{model_id}.model"
+    return os.path.join(TRAINED_MODEL_DIR, filename)
 def _request_predict(
     url: str,
     algorithm_code: str,
@@ -175,34 +162,28 @@ def _request_predict(
     features: dict,
     risk_labels: list[str] | None = None,
 ) -> dict:
-    _require_existing_file(model_path, "模型")
-    _require_existing_file(arff_path, "数据集")
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError(f"模型文件不存在:{model_path}")
+    if not os.path.isfile(arff_path):
+        raise FileNotFoundError(f"数据集文件不存在:{arff_path}")
+    payload = {
+        "algorithm_code": algorithm_code,
+        "model_path": model_path,
+        "arff_path": arff_path,
+        "features": features,
+        "risk_labels": risk_labels or [],
+    }
     result = _request_java_json(
         url,
         "predict",
-        {
-            "algorithm_code": algorithm_code,
-            "model_path": model_path,
-            "arff_path": arff_path,
-            "features": features,
-            "risk_labels": risk_labels or [],
-        },
+        payload,
         PREDICT_TIMEOUT,
-        connection_error=f"无法连接到 Java 预测服务（{url}）",
-        request_error=f"Java 预测服务请求失败（{url}）",
-        default_error="Java 预测失败",
+        "Java预测",
     )
-    return result["data"]
-
-
-def _resolve_algorithm_url(algorithm_code: str, pmwnb_url: str) -> tuple[str, str]:
-    code = algorithm_code.upper()
-    url = pmwnb_url if code == "PMWNB" else ALGORITHM_SERVICE_URLS.get(code)
-    if not url:
-        raise RuntimeError(f"未配置 {code} 算法服务")
-    return code, url
-
-
+    data = result.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("Java预测服务未返回有效预测结果")
+    return data
 def execute_algorithm_service_predict(
     algorithm_code: str,
     model_path: str,
@@ -210,10 +191,12 @@ def execute_algorithm_service_predict(
     features: dict,
     risk_labels: list[str] | None = None,
 ) -> dict:
-    """Use the algorithm service's own /predict endpoint for package smoke tests.
-
-    The training runtime and prediction runtime are the same Java service, so an
-    exported package is smoke-tested against the exact daemon used for training.
-    """
-    code, url = _resolve_algorithm_url(algorithm_code, PMWNB_SERVICE_URL)
-    return _request_predict(url, code, model_path, arff_path, features, risk_labels)
+    code, url = _resolve_algorithm_url(algorithm_code)
+    return _request_predict(
+        url,
+        code,
+        model_path,
+        arff_path,
+        features,
+        risk_labels,
+    )

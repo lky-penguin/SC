@@ -1,15 +1,10 @@
-"""数据集版本、迭代与文件生命周期。
-
-dataset 行表示一个版本；每次变更都写 DatasetRevision，是否新建版本由
-resolve_iteration_policy 决定，原地更新同样保留审计记录。
-"""
+from __future__ import annotations
 import os
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+import csv
 from uuid import uuid4
-
+from datetime import datetime, timezone
 from sqlalchemy import func, select
-
+from sqlalchemy.exc import SQLAlchemyError
 from app.models.dataset import Dataset
 from app.models.dataset_revision import DatasetRevision
 from app.models.model_version import ModelVersion
@@ -30,6 +25,7 @@ from app.services.dataset_iteration import (
     CHANGE_TYPES,
     MODE_IN_PLACE,
     MODE_NEW_VERSION,
+    IterationDecision,
     resolve_iteration_policy,
 )
 from app.services.dataset_presenter import dataset_to_dict, revision_to_dict
@@ -58,20 +54,13 @@ from app.utils.validation import (
     validate_length,
     validate_required,
 )
-
 logger = get_logger("dataset")
-
-
-
 class DatasetService(ServiceBase):
-    """数据集管理（上传/版本/停用/删除）+ 字段结构校验。"""
-
     def _get(self, dataset_id: int) -> Dataset:
         dataset = self.db.get(Dataset, dataset_id)
         if dataset is None:
             raise ServiceError(404, "数据集不存在")
         return dataset
-
     @staticmethod
     def _validate_file_path(file_path: str) -> None:
         err = validate_length(file_path, "file_path", DATASET_FILE_PATH_MAX_LEN)
@@ -80,81 +69,56 @@ class DatasetService(ServiceBase):
         path_err = validate_dataset_file_path(file_path)
         if path_err:
             raise ServiceError(400, path_err)
-
-    @staticmethod
-    def _require_supported_upload(filename: str, message: str) -> str:
-        fmt = detect_format(filename)
-        if fmt == "unknown":
-            raise ServiceError(400, message)
-        return fmt
-
-    @staticmethod
-    def _parse_uploaded_dataset(parser, error_message: str, *args):
-        try:
-            return parser(*args)
-        except Exception as exc:  # noqa: BLE001
-            raise ServiceError(400, f"{error_message}: {exc}") from exc
-
     @staticmethod
     def _schema_from_uploaded_fields(
-        fields: List[Dict], label_field: str, *, subject: str, missing_suffix: str = ""
-    ) -> List[Dict]:
-        if not fields:
+        fields: list[dict], label_field: str, *, subject: str
+    ) -> list[dict]:
+        if not fields:  # 解析失败基本是上传文件问题
             raise ServiceError(400, f"{subject}没有解析出任何字段")
         names = [str(field.get("name", "")) for field in fields]
         if label_field not in names:
             raise ServiceError(
                 400,
-                f"标签字段 {label_field} 不存在于{subject}字段中（可用字段: {', '.join(names[:10])}{missing_suffix}）",
+                f"标签字段 {label_field} 不存在于{subject}字段中，可用字段: {', '.join(names[:10])}",
             )
         return build_fields_schema(fields, label_field)
-
     @staticmethod
-    def _schema_structure(
-        schema: Optional[List[Dict]],
+    def _schema_matches(
+        left: list[dict] | None,
+        right: list[dict] | None,
         *,
         preserve_enum_order: bool = True,
-    ) -> tuple:
-        """提取影响兼容性的字段结构；样例值变化不算破坏性结构变更。
-
-        ARFF nominal 的声明顺序（尤其 label/arff_values）有语义，默认按原序列
-        比较。CSV 没有显式值域声明，解析器会稳定排序推断值域；仅该格式替换
-        比较时允许按排序后的值域判断兼容性。
-        """
-        return tuple(
-            (
-                str(field.get("name", "")),
-                str(field.get("role", "feature")),
-                str(field.get("type", "")),
-                (
-                    tuple(str(value) for value in (field.get("enum_values") or []))
-                    if preserve_enum_order
-                    else tuple(
-                        sorted(
-                            str(value)
-                            for value in (field.get("enum_values") or [])
-                        )
-                    )
-                ),
-            )
-            for field in (schema or [])
-            if isinstance(field, dict)
-        )
-
+    ) -> bool:
+        left_fields = left or []
+        right_fields = right or []
+        if len(left_fields) != len(right_fields):
+            return False
+        for current, other in zip(left_fields, right_fields):
+            if (
+                str(current.get("name", "")) != str(other.get("name", ""))
+                or str(current.get("role", "feature"))
+                != str(other.get("role", "feature"))
+                or str(current.get("type", "")) != str(other.get("type", ""))
+            ):
+                return False
+            current_enum = [str(value) for value in (current.get("enum_values") or [])]
+            other_enum = [str(value) for value in (other.get("enum_values") or [])]
+            if not preserve_enum_order:
+                current_enum.sort()
+                other_enum.sort()
+            if current_enum != other_enum:
+                return False
+        return True
     def _read_replacement_schema(
         self, file_path: str, label_field: str
-    ) -> List[Dict]:
-        """读取替换文件的实际 ARFF/CSV 字段，并构造成可入库字段结构。"""
-        fields = self._parse_uploaded_dataset(
-            read_dataset_fields, "替换文件解析失败", resolve_dataset_path(file_path)
-        )
-        return self._schema_from_uploaded_fields(
-            fields, label_field, subject="替换文件"
-        )
-
+    ) -> list[dict]:
+        try:
+            fields = read_dataset_fields(resolve_dataset_path(file_path))
+        except (OSError, ValueError, csv.Error) as exc:
+            raise ServiceError(400, f"替换文件解析失败: {exc}") from exc
+        return self._schema_from_uploaded_fields(fields, label_field, subject="替换文件")
     @staticmethod
-    def _cleanup_unregistered_upload(file_path: str) -> None:
-        """清理未能登记成功的新上传文件；仅允许触碰 data/ 下路径。"""
+    def _cleanup_unregistered_upload(file_path: str) -> None:  # 清理没登记的文件
         if validate_dataset_file_path(file_path) is not None:
             return
         try:
@@ -162,23 +126,12 @@ class DatasetService(ServiceBase):
             if os.path.isfile(path):
                 os.remove(path)
         except OSError:
-            logger.warning("清理未登记的上传文件失败: %s", file_path)
-
-    @staticmethod
-    def _dataset_metadata(dataset: Dataset) -> dict:
-        return {
-            "dataset_id": dataset.id,
-            "version": dataset.version,
-            "label_field": dataset.label_field,
-            "fields_schema": dataset.fields_schema,
-        }
-
+            logger.warning("清理未登记上传文件失败: %s", file_path)
     def _next_version(self, logical_id: str) -> int:
         max_version = self.db.scalar(
             select(func.max(Dataset.version)).where(Dataset.logical_id == logical_id)
-        ) or 0
+        ) or 0  # 靠唯一约束兜底
         return int(max_version) + 1
-
     def _is_referenced(self, dataset_id: int) -> bool:
         count = self.db.scalar(
             select(func.count()).select_from(ModelVersion).where(
@@ -186,90 +139,85 @@ class DatasetService(ServiceBase):
             )
         )
         return bool(count)
-
     def _record_revision(
         self,
         *,
         dataset: Dataset,
         change_type: str,
-        is_breaking: bool,
-        mode: str,
-        reason: str,
-        summary: Optional[str],
-        detail: Optional[Dict],
-        result_dataset_id: Optional[int],
+        decision: IterationDecision,
+        summary: str | None,
+        detail: dict | None,
+        result_dataset_id: int | None,
         created_at: datetime,
     ) -> None:
-        """写一条迭代记录（原地更新也留痕，保证「迭代 = 全部记录」）。
-
-        dataset_id 指向被迭代的目标版本行；result_dataset_id
-        仅在新建版本时给出。
-        """
         self.db.add(
             DatasetRevision(
                 logical_id=dataset.logical_id,
                 dataset_id=dataset.id,
                 change_type=change_type,
-                is_breaking=is_breaking,
-                mode=mode,
+                is_breaking=decision.is_breaking,
+                mode=decision.mode,
                 result_dataset_id=result_dataset_id,
-                reason=reason,
+                reason=decision.reason,
                 summary=summary,
                 detail=detail,
                 created_at=created_at,
             )
         )
-
-    def _to_dict(self, dataset: Dataset) -> dict:
-        """序列化数据集，并补充前端列表/详情常用展示字段。"""
+    def _to_dict(self, dataset: Dataset) -> dict:  # 序列化数据集
         return dataset_to_dict(
             dataset,
             record_count=count_dataset_records(dataset.file_path),
             referenced=self._is_referenced(dataset.id),
         )
-
-    # ------------------------------------------------------------------
-    # 查询（需求 2.3.1 / 6.5.2：查看列表与字段预览 -> 允许/允许）
-    # ------------------------------------------------------------------
+    def _to_dict_many(self, datasets: list[Dataset]) -> list[dict]:
+        ids = [item.id for item in datasets]
+        referenced_ids = set(
+            self.db.scalars(
+                select(ModelVersion.dataset_id)
+                .where(ModelVersion.dataset_id.in_(ids))
+                .distinct()
+            ).all()
+        )  # 列表页一次查完，防止循环查库
+        record_counts = {}
+        for item in datasets:
+            if item.file_path not in record_counts:
+                record_counts[item.file_path] = count_dataset_records(item.file_path)
+        return [
+            dataset_to_dict(
+                item,
+                record_count=record_counts[item.file_path],
+                referenced=item.id in referenced_ids,
+            )
+            for item in datasets
+        ]
     @service_call
     def get_list(
         self,
         page: int = 1,
         page_size: int = 10,
     ):
-        """个人版数据集列表。"""
         stmt = select(Dataset).order_by(Dataset.logical_id, Dataset.version)
         result = paginate(self.db, stmt, page, page_size)
-        result["items"] = [self._to_dict(d) for d in result["items"]]
+        result["items"] = self._to_dict_many(result["items"])
         return ok(data=result)
-
     @service_call
     def get(self, dataset_id: int):
-        """数据集详情（含字段结构 fields_schema）。"""
         return ok(data=self._to_dict(self._get(dataset_id)))
-
     @service_call
     def get_versions(self, dataset_id: int):
-        """返回同一数据集的全部版本。"""
         dataset = self._get(dataset_id)
         versions = self.db.scalars(
             select(Dataset)
             .where(Dataset.logical_id == dataset.logical_id)
             .order_by(Dataset.version.desc())
         ).all()
-        return ok(data={"items": [self._to_dict(item) for item in versions]})
-
-    # ------------------------------------------------------------------
-    # 上传 / 版本 / 停用 / 删除（数据级别由上传者角色决定，创建后不可变）
-    # ------------------------------------------------------------------
+        return ok(data={"items": self._to_dict_many(versions)})
     @staticmethod
-    def _generated_logical_id() -> str:
-        """生成仅供系统内部使用的稳定数据集标识。"""
+    def _generated_logical_id() -> str:  # 生成内部数据集标识
         return f"ds_{uuid4().hex}"
-
     @staticmethod
-    def _default_label_field(fields_schema: List[Dict]) -> str:
-        """未指定时，将最后一列识别为标签字段。"""
+    def _default_label_field(fields_schema: list[dict]) -> str:  # 取最后一列为标签字段
         if not fields_schema:
             raise ServiceError(400, "数据集没有可用字段")
         last = fields_schema[-1]
@@ -277,18 +225,16 @@ class DatasetService(ServiceBase):
         if not label_field:
             raise ServiceError(400, "无法识别标签字段")
         return label_field
-
     @service_call
     def create(
         self,
         *,
         name: str,
         file_path: str,
-        fields_schema: List[Dict],
-        label_field: Optional[str] = None,
-        logical_id: Optional[str] = None,
+        fields_schema: list[dict],
+        label_field: str | None = None,
+        logical_id: str | None = None,
     ):
-        """登记数据集；内部标识由系统生成，版本号自动取最大值 + 1。"""
         name = (name or "").strip()
         label_field = (label_field or self._default_label_field(fields_schema)).strip()
         logical_id = logical_id or self._generated_logical_id()
@@ -306,14 +252,13 @@ class DatasetService(ServiceBase):
         err = validate_length(label_field, "label_field", DATASET_LABEL_FIELD_MAX_LEN)
         if err:
             raise ServiceError(400, err)
-
         err = validate_fields_schema(fields_schema, label_field)
         if err:
             raise ServiceError(400, err)
-
-        # 初次登记也走同一套策略：change_type=create -> 直接生成首个版本
         decision = resolve_iteration_policy(CHANGE_TYPE_CREATE, referenced=False)
-
+        self.db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(logical_id)))
+        )
         now = datetime.now(timezone.utc)
         dataset = Dataset(
             logical_id=logical_id,
@@ -333,40 +278,38 @@ class DatasetService(ServiceBase):
         self._record_revision(
             dataset=dataset,
             change_type=CHANGE_TYPE_CREATE,
-            is_breaking=decision.is_breaking,
-            mode=decision.mode,
-            reason=decision.reason,
+            decision=decision,
             summary=f"登记数据集 {name} v{dataset.version}",
             detail=None,
             result_dataset_id=dataset.id,
             created_at=now,
         )
+        data = self._to_dict(dataset)
         self.commit()
-        return ok(data=self._to_dict(dataset), message="数据集上传成功")
-
+        return ok(data=data, message="数据集上传成功")
     @service_call
     def upload_from_file(
         self,
         name: str,
         filename: str,
         file_bytes: bytes,
-    ):
-        """上传数据集文件；名称由用户填写，标签字段自动取最后一列。"""
-        fmt = self._require_supported_upload(filename, "仅支持 .arff / .csv 格式文件")
-
+    ):  # 上传数据集文件
+        fmt = detect_format(filename)
+        if fmt == "unknown":
+            raise ServiceError(400, "仅支持.arff/.csv格式文件")
         try:
             relative_path = save_uploaded_dataset(filename, file_bytes)
         except ValueError as exc:
             raise ServiceError(400, str(exc)) from exc
-
         try:
             saved_path = resolve_dataset_path(relative_path)
-            fields = self._parse_uploaded_dataset(
-                read_dataset_fields, "文件解析失败", saved_path
-            )
+            try:
+                fields = read_dataset_fields(saved_path)
+            except (OSError, ValueError, csv.Error) as exc:
+                raise ServiceError(400, f"文件解析失败: {exc}") from exc
             label_field = self._default_label_field(fields)
             fields_schema = self._schema_from_uploaded_fields(
-                fields, label_field, subject="文件", missing_suffix="..."
+                fields, label_field, subject="文件"
             )
             response = self.create(
                 name=name,
@@ -374,36 +317,26 @@ class DatasetService(ServiceBase):
                 fields_schema=fields_schema,
                 label_field=label_field,
             )
+            if response.code != 0:
+                raise ServiceError(response.code, response.message)
         except Exception:
             self._cleanup_unregistered_upload(relative_path)
             raise
-
-        if response.code != 0:
-            self._cleanup_unregistered_upload(relative_path)
         return response
-
     def _revise(
         self,
         dataset_id: int,
         change_type: str,
         *,
-        file_path: Optional[str] = None,
-        fields_schema: Optional[List[Dict]] = None,
-        label_field: Optional[str] = None,
-        name: Optional[str] = None,
-        summary: Optional[str] = None,
-        detail: Optional[Dict] = None,
-    ):
-        """执行一次迭代，返回 (目标版本行, 决策)。
-
-        策略见 dataset_iteration.resolve_iteration_policy：
-        - 破坏结构兼容 -> 必新建版本（即使未被引用也留痕）；
-        - 兼容 + 已被引用 -> 新建版本，冻结旧文件；
-        - 兼容 + 未被引用 -> 原地更新当前版本行（不涨版本号，仍记迭代记录）。
-        """
+        file_path: str | None = None,
+        fields_schema: list[dict] | None = None,
+        label_field: str | None = None,
+        name: str | None = None,
+        summary: str | None = None,
+        detail: dict | None = None,
+    ):  # 进行数据集迭代
         if change_type not in CHANGE_TYPES:
             raise ServiceError(400, f"未知的数据集迭代类型: {change_type}")
-
         if change_type == CHANGE_TYPE_METADATA and any(
             value is not None for value in (file_path, fields_schema, label_field)
         ):
@@ -411,68 +344,45 @@ class DatasetService(ServiceBase):
                 400,
                 "元数据变更仅允许修改名称、摘要和详情，不能同时修改文件或字段结构",
             )
-
         dataset = self._get(dataset_id)
-
-        previous_file_path = dataset.file_path
-
+        self.db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(dataset.logical_id)))
+        )
+        self.db.refresh(dataset)
         target_file_path = dataset.file_path
         target_schema = dataset.fields_schema
         target_label = dataset.label_field
-
         if file_path is not None:
             self._validate_file_path(file_path)
             target_file_path = canonical_dataset_path(file_path)
-
         if fields_schema is not None:
             target_schema = fields_schema
         if label_field is not None:
             target_label = label_field
-
         replace_schema = None
         if change_type == CHANGE_TYPE_REPLACE_FILE and file_path is not None:
-            # 整包替换必须相信文件实际结构，而不是调用方是否传了 fields_schema。
             replace_schema = self._read_replacement_schema(
                 target_file_path, target_label
-            )
+            )  # 以替换文件解析出的结构为准
             target_schema = replace_schema
-
-        if (
-            fields_schema is not None
-            or label_field is not None
-            or replace_schema is not None
+        if any(
+            value is not None for value in (fields_schema, label_field, replace_schema)
         ):
             err = validate_fields_schema(target_schema, target_label)
             if err:
                 raise ServiceError(400, err)
-
         target_name = name if name is not None else dataset.name
-
-        if replace_schema is not None:
-            preserve_enum_order = detect_format(target_file_path) == "arff"
-            schema_unchanged = (
-                self._schema_structure(
-                    replace_schema,
-                    preserve_enum_order=preserve_enum_order,
-                )
-                == self._schema_structure(
-                    dataset.fields_schema,
-                    preserve_enum_order=preserve_enum_order,
-                )
-                and target_label == dataset.label_field
-            )
-        else:
-            schema_unchanged = (
-                list(target_schema) == list(dataset.fields_schema)
-                and target_label == dataset.label_field
-            )
+        preserve_enum_order = detect_format(target_file_path) == "arff"
+        schema_unchanged = target_label == dataset.label_field and self._schema_matches(
+            target_schema,
+            dataset.fields_schema,
+            preserve_enum_order=preserve_enum_order,
+        )
         referenced = self._is_referenced(dataset.id)
         decision = resolve_iteration_policy(
             change_type, referenced=referenced, schema_unchanged=schema_unchanged
         )
-
         now = datetime.now(timezone.utc)
-
         target = dataset
         if decision.mode == MODE_IN_PLACE:
             dataset.file_path = target_file_path
@@ -481,7 +391,7 @@ class DatasetService(ServiceBase):
             dataset.name = target_name
             dataset.change_type = change_type
             dataset.is_breaking = decision.is_breaking
-        else:
+        elif decision.mode == MODE_NEW_VERSION:
             target = Dataset(
                 logical_id=dataset.logical_id,
                 name=target_name,
@@ -497,72 +407,33 @@ class DatasetService(ServiceBase):
             )
             self.db.add(target)
             self.db.flush()
-
         self._record_revision(
             dataset=dataset,
             change_type=change_type,
-            is_breaking=decision.is_breaking,
-            mode=decision.mode,
-            reason=decision.reason,
+            decision=decision,
             summary=summary,
             detail=detail,
             result_dataset_id=None if target is dataset else target.id,
             created_at=now,
         )
-        self.commit()
-        if not dataset_paths_same(previous_file_path, target_file_path):
-            self._cleanup_replaced_file(
-                previous_file_path, replacement_file_path=target_file_path
-            )
         return target, decision
-
-    def _cleanup_replaced_file(
-        self,
-        old_file_path: str,
-        *,
-        replacement_file_path: str | None = None,
-    ) -> None:
-        """迭代换文件后清理不再被任何版本引用的旧物理文件（best-effort）。
-
-        只在没有任何 dataset 行仍指向它时删除：
-        只改字段的旧路径可能被多个版本共用，
-        贸然删除会让历史版本读不到文件。删除失败只记日志，不影响迭代结果。
-        """
-        if not old_file_path:
-            return
+    def _cleanup_replaced_file(self, old_file_path: str) -> None:  # 删除不被引用的文件
         if validate_dataset_file_path(old_file_path) is not None:
             return
-        if (
-            replacement_file_path is not None
-            and dataset_paths_same(old_file_path, replacement_file_path)
-        ):
-            return
-
-        scalars = getattr(self.db, "scalars", None)
-        if callable(scalars):
-            referenced_paths = scalars(select(Dataset.file_path)).all()
+        try:
+            referenced_paths = self.db.scalars(select(Dataset.file_path)).all()
             if any(
                 path and dataset_paths_same(path, old_file_path)
                 for path in referenced_paths
             ):
                 return
-        else:
-            # 兼容只实现最小 Session 协议的测试替身/旧适配层。
-            still_used = self.db.scalar(
-                select(func.count())
-                .select_from(Dataset)
-                .where(Dataset.file_path == old_file_path)
-            )
-            if still_used:
-                return
-
-        try:
             path = resolve_dataset_path(old_file_path)
             if os.path.isfile(path):
                 os.remove(path)
         except OSError:
-            logger.warning("清理被替换的数据集文件失败: %s", old_file_path)
-
+            logger.warning("清理被替换的数据集文件失败: %s", old_file_path)  # 删不掉记日志
+        except SQLAlchemyError:
+            logger.exception("检查数据集文件引用失败: %s", old_file_path)
     @service_call
     def append_rows(
         self,
@@ -570,71 +441,77 @@ class DatasetService(ServiceBase):
         filename: str,
         file_bytes: bytes,
     ):
-        """追加样本（管理级角色，场景管理员仅自己场景）。
-
-        把「增量文件」并入当前数据集：增量必须是同结构（字段名同名同序）的
-        ARFF / CSV。合并后写到新物理文件，再交给 _revise 按迭代策略决定
-        原地更新还是新建版本 —— 未被引用时版本号不变（只增数据），已被引用时
-        自动新开版本冻结旧文件。
-
-        需要改变字段结构请改用「字段变更」迭代，本方法只负责增加数据条数。
-        """
         dataset = self._get(dataset_id)
-
-        fmt = self._require_supported_upload(
-            filename, "仅支持 .arff / .csv 格式的增量文件"
+        self.db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext(dataset.logical_id)))
         )
+        self.db.refresh(dataset)
+        fmt = detect_format(filename)
+        if fmt == "unknown":
+            raise ServiceError(400, "仅支持.arff/.csv格式的增量文件")
         if detect_format(dataset.file_path) != fmt:
             raise ServiceError(400, "增量文件格式必须与当前数据集一致")
-
-        increment_fields, increment_rows = self._parse_uploaded_dataset(
-            parse_dataset_bytes, "增量文件解析失败", file_bytes, fmt
-        )
+        try:
+            increment_fields, increment_rows = parse_dataset_bytes(file_bytes, fmt)
+        except (OSError, ValueError, csv.Error) as exc:
+            raise ServiceError(400, f"增量文件解析失败: {exc}") from exc
         if not increment_rows:
             raise ServiceError(400, "增量文件没有数据行")
-
-        expected_names = [str(f.get("name")) for f in (dataset.fields_schema or [])]
-        actual_names = [str(f.get("name")) for f in increment_fields]
-        if actual_names != expected_names:
+        increment_schema = build_fields_schema(increment_fields, dataset.label_field)
+        preserve_enum_order = fmt == "arff"
+        if not self._schema_matches(
+            increment_schema,
+            dataset.fields_schema,
+            preserve_enum_order=preserve_enum_order,
+        ):
             raise ServiceError(
                 400,
-                "增量文件字段与当前数据集不一致（追加要求同名同序）；"
+                "增量文件字段与当前数据集不一致；"
                 "如需变更字段请使用「字段变更」迭代",
             )
-
-        current_path = resolve_dataset_path(dataset.file_path)
+        previous_file_path = dataset.file_path
+        current_path = resolve_dataset_path(previous_file_path)
         if not os.path.exists(current_path):
             raise ServiceError(404, f"数据集文件不存在: {current_path}")
         _, current_rows = read_all_rows(current_path)
         merged_rows = list(current_rows) + list(increment_rows)
-
         new_rel_path = iteration_target_path(dataset.file_path, fmt)
-        write_dataset_file(
-            resolve_dataset_path(new_rel_path), dataset.fields_schema, merged_rows, fmt
-        )
-
         added = len(increment_rows)
-        dataset_after, decision = self._revise(
-            dataset_id,
-            CHANGE_TYPE_APPEND_ROWS,
-            file_path=new_rel_path,
-            summary=f"追加 {added} 条样本（{len(current_rows)} → {len(merged_rows)}）",
-            detail={
-                "added_rows": added,
-                "rows_before": len(current_rows),
-                "rows_after": len(merged_rows),
-                "increment_file": filename,
-            },
-        )
-        if decision.mode == MODE_NEW_VERSION:
-            message = f"追加样本：已新建版本 v{dataset_after.version}，新增 {added} 条"
-        else:
-            message = f"追加样本：当前版本新增 {added} 条（版本号不变）"
-        return ok(data=self._to_dict(dataset_after), message=message)
-
+        try:
+            write_dataset_file(
+                resolve_dataset_path(new_rel_path),
+                dataset.fields_schema,
+                merged_rows,
+                fmt,
+            )
+            dataset_after, decision = self._revise(
+                dataset_id,
+                CHANGE_TYPE_APPEND_ROWS,
+                file_path=new_rel_path,
+                summary=f"追加{added}条样本（{len(current_rows)} → {len(merged_rows)}）",
+                detail={
+                    "added_rows": added,
+                    "rows_before": len(current_rows),
+                    "rows_after": len(merged_rows),
+                    "increment_file": filename,
+                },
+            )
+            data = self._to_dict(dataset_after)
+            if decision.mode == MODE_NEW_VERSION:
+                message = f"追加样本：已新建版本v{dataset_after.version}，新增{added}条"
+            else:
+                message = f"追加样本：当前版本新增{added}条"
+            self.commit()
+        except Exception:
+            self.db.rollback()
+            self._cleanup_replaced_file(new_rel_path)
+            raise
+        # 数据库提交成功后再考虑回收旧文件
+        if not dataset_paths_same(previous_file_path, new_rel_path):
+            self._cleanup_replaced_file(previous_file_path)
+        return ok(data=data, message=message)
     @service_call
     def get_revisions(self, dataset_id: int):
-        """迭代历史：每次迭代一条，含原地更新。"""
         dataset = self._get(dataset_id)
         revisions = self.db.scalars(
             select(DatasetRevision)
@@ -647,62 +524,55 @@ class DatasetService(ServiceBase):
                 "items": [revision_to_dict(revision) for revision in revisions],
             }
         )
-
     @service_call
     def disable(self, dataset_id: int):
-        """停用数据集；历史模型、训练记录和评估结果保持可追溯。"""
         dataset = self._get(dataset_id)
         dataset.status = DATASET_STATUS_INACTIVE
+        data = self._to_dict(dataset)
         self.commit()
-        return ok(data=self._to_dict(dataset), message="数据集已停用")
-
+        return ok(data=data, message="数据集已停用")
     @service_call
     def delete(self, dataset_id: int):
-        """物理删除数据集；被模型版本引用时只能停用。"""
         dataset = self._get(dataset_id)
         if self._is_referenced(dataset_id):
-            raise ServiceError(400, "数据集已被模型版本引用，禁止物理删除，只能停用")
+            raise ServiceError(400, "数据集已被模型版本引用，只能停用")
+        file_path = dataset.file_path
         self.db.delete(dataset)
         self.commit()
-        return ok(message="数据集已删除")
-
+        self._cleanup_replaced_file(file_path)
+        return ok(message='数据集已删除')
     @service_call
     def get_fields_schema(self, dataset_id: int):
-        """字段预览：字段名、类型、角色和样例值。"""
         dataset = self._get(dataset_id)
-        return ok(data=self._dataset_metadata(dataset))
-
+        return ok(
+            data={
+                "dataset_id": dataset.id,
+                "version": dataset.version,
+                "label_field": dataset.label_field,
+                "fields_schema": dataset.fields_schema,
+            }
+        )
     @service_call
-    def get_preview(
-        self,
-        dataset_id: int,
-        page: int = 1,
-        page_size: int = 50,
-    ):
-        """数据内容预览（需求 2.4：前 N 条数据、标签列高亮、分页）。
-
-        - 性能：单次最多返回 50 条，后端从数据文件直接读取。
-        """
-        if page_size > 50:
-            page_size = 50
+    def get_preview(self, dataset_id: int, page: int = 1, page_size: int = 50):
+        if page < 1:
+            raise ServiceError(400, "页码必须大于等于1")
+        if page_size < 1 or page_size > 50:
+            raise ServiceError(400, "页码尺寸必须在[1,50]之间")
         dataset = self._get(dataset_id)
-
         path = resolve_dataset_path(dataset.file_path)
         if not os.path.exists(path):
             raise ServiceError(404, f"数据集文件不存在: {path}")
-
         offset = (page - 1) * page_size
-        # 取样本的统一入口（ARFF / CSV 都支持，字段名取登记的 fields_schema），
-        # 与「批量研判」共用，避免两处口径漂移。
         page_rows = read_sample_rows(path, dataset.fields_schema, offset, page_size)
-        total = count_dataset_records(dataset.file_path)
-        data = self._dataset_metadata(dataset)
-        data.update(
-            {
+        return ok(
+            data={
+                "dataset_id": dataset.id,
+                "version": dataset.version,
+                "label_field": dataset.label_field,
+                "fields_schema": dataset.fields_schema,
                 "rows": page_rows,
                 "page": page,
-                "page_size": len(page_rows),
-                "total": total,
+                "page_size": page_size,
+                "total": count_dataset_records(dataset.file_path),
             }
         )
-        return ok(data=data)
