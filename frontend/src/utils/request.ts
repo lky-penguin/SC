@@ -1,8 +1,9 @@
+//axios 实例 + 统一拆包 + SSE 解析
+//timeout 故意设 0
 import axios from 'axios';
 import type { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
 
 interface ApiEnvelope<T> { code: number; message?: string; data?: T; }
-
 export class RequestError extends Error {
   status?: number;
   code?: string;
@@ -36,6 +37,7 @@ export const service: AxiosInstance = axios.create({
 });
 
 service.interceptors.response.use(
+  //直接把 response.data 抛给业务层，业务代码里少写一层 .data
   (response: AxiosResponse) => response.data,
   (error: AxiosError) => Promise.reject(new RequestError(extractErrorMessage(error), {
     status: error.response?.status,
@@ -48,7 +50,7 @@ export const unwrapData = <T = unknown>(res: unknown): T => {
   if (body?.code === 0) return body.data as T;
   throw new Error(body?.message || '请求失败');
 };
-
+//自己解 SSE：EventSource 不支持 POST
 export const consumeSse = async (
   body: ReadableStream<Uint8Array>,
   onEvent: (event: string, data: Record<string, unknown>) => void,
@@ -78,6 +80,7 @@ export const consumeSse = async (
     if (done) break;
     consume(decoder.decode(value, { stream: true }));
   }
+  //流结束时把编码器里剩下的字节冲出来
   consume(decoder.decode());
 };
 
