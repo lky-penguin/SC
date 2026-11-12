@@ -10,7 +10,6 @@ export interface AISetting {
   api_key_readable?: boolean;
   updated_at?: string;
 }
-
 export interface AIConnectionTestResult { connected: boolean; reason_code: string; message: string; }
 
 export const getAISetting = async (): Promise<AISetting> => unwrapData(await request.get('/api/v1/settings/ai'));
