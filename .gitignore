@@ -44,9 +44,9 @@ backend/storage/
 # Java build output and packaged binaries
 *.class
 *.jar
-backend/java/.build-*/
-backend/java/**/target/
-backend/java/**/out/
+java/.build-*/
+java/**/target/
+java/**/out/
 
 # Deployment (not part of the source repository)
 deploy/

@@ -1,5 +1,5 @@
+//轮询器骨架抽出来共用 session / round 两个版本号是给过期回包用的
 export interface PollContext { isCurrent(): boolean; }
-
 export const createJobPoller = (
   intervalMs: number,
   onTick: (context: PollContext) => Promise<void>,
@@ -10,6 +10,7 @@ export const createJobPoller = (
   let round = 0;
   let pending: Promise<void> | null = null;
 
+  //记下当下的会话版本和 owner作为回包时的判断依据
   const capture = (): PollContext => {
     const version = session;
     const owner = getOwner();
@@ -17,6 +18,7 @@ export const createJobPoller = (
   };
 
   const tick = (): Promise<void> => {
+    //同一时刻只允许一个请求在飞
     if (pending) return pending;
     const context = capture();
     const version = round;
@@ -50,7 +52,7 @@ export const createJobPoller = (
     get active() { return timer !== null; },
   };
 };
-
+//不用手动清理，也不会因为 HMR 重复建定时器
 export const createStorePoller = (intervalMs: number, getOwner: () => string | null) => {
   const pollers = new WeakMap<object, ReturnType<typeof createJobPoller>>();
   return (store: { _poll(context: PollContext): Promise<void> }) => {

@@ -1,3 +1,5 @@
+//前端入口
+//element-plus 没整包引样式，只挑实际用到的
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
@@ -8,7 +10,6 @@ import 'element-plus/theme-chalk/el-overlay.css';
 import 'element-plus/theme-chalk/el-message.css';
 import 'element-plus/theme-chalk/el-message-box.css';
 import 'element-plus/theme-chalk/el-notification.css';
-
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);

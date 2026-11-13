@@ -1,6 +1,8 @@
+//模型版本中心
 import request, { unwrapData } from '@/utils/request';
 import type { EvaluationMetrics, ModelStatus } from '@/types/security';
 
+//与后端 ModelVersion 的字段保持一致
 export interface BackendModelVersion {
   id: number;
   model_version_id: number;
@@ -17,7 +19,6 @@ export interface BackendModelVersion {
   model_evaluation_available?: boolean;
   model_attributes?: Record<string, unknown>;
 }
-
 export interface ModelPackageExport {
   package_id: string;
   package_sha256: string;
@@ -33,7 +34,6 @@ export interface ModelVersionPage {
   page: number;
   page_size: number;
 }
-
 interface ModelVersionQuery {
   dataset_id?: string | number;
   page?: number;
@@ -48,13 +48,14 @@ export const getModelVersionPage = async (params?: ModelVersionQuery): Promise<M
 export const deleteModelVersion = async (modelId: number | string): Promise<void> => {
   await unwrapData(await request.delete(`/api/v1/model-versions/${modelId}`));
 };
-
+//生成模型包（zip 打包+落盘），返回包元信息，下载要再调 GET
 export const exportModelPackage = async (modelId: string | number): Promise<ModelPackageExport> =>
   unwrapData(await request.post(`/api/v1/model-versions/${modelId}/package`));
 
 export const modelPackageDownloadUrl = (modelId: string | number): string =>
   `/api/v1/model-versions/${modelId}/package`;
 
+//批量导出：一次请求打一个 zip 回来
 export const exportModelPackages = async (modelIds: number[]): Promise<Blob> => {
   const baseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
   const response = await fetch(`${baseUrl}/api/v1/model-versions/packages/export`, {
